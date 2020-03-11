@@ -1,4 +1,4 @@
-# statistical-learning-projects
+# statistical_learning_projects
 
 - Predicting Credit Card Fraud
 - Predicting the Quality of Wine
