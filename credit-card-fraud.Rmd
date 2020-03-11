@@ -1,0 +1,301 @@
+---
+title: "Detecting Credit Card Fraud"
+author: 'Jae-Ho Lee'
+date: "11/16/2019"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center', 
+                      cache = TRUE, autodep = TRUE)
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(caret)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(gridExtra)
+library(gbm)
+library(ROSE)
+library(caTools)
+```
+
+# Abstract
+
+> Statistical learning techniques were implemented in order to detect fraudulent credit card activity based on  various customer and transaction information.
+
+***
+
+# Introduction
+
+Credit card fraud is an act of theft that everyone experiences at some point -- either by personal experience or indirectly through stories of an acquaintance. This may be of a familiar scenario: you're checking your bank account to track your spendings when all of a sudden you realize payments of hundreds of dollars have been made with your credit card, and you proceed to frantically call the credit card company. Although credit card fraud counts for only about 0.1 % of all card transactions[^1], due to the relatively large consequences associated with the theft, the experience of having to deal with it is undesirable. 
+
+Statistical learning techniques have been applied to construct a model that would help identify instances of fraud early on, ideally in the midst of it happening. While a large portion of fraudulent transaction can be identified with the resulting model for this dataset, further data collection and analysis needs to be conducted in order to train a more robust the model and assess its effectiveness.
+
+***
+
+# Methods
+
+## Data
+
+```{r, prepare-data, message = FALSE}
+# read in data
+cc = readr::read_csv("https://stat432.org/data/creditcard.csv.gz")
+
+# coerce Class into a factor
+cc$Class = factor(ifelse(cc$Class == 0, "genuine", "fraud"))
+
+# randomly split data
+trn_idx = sample(nrow(cc), size = 0.5 * nrow(cc))
+cc_trn = cc[trn_idx, ] %>% 
+  as_tibble
+cc_tst = cc[-trn_idx, ] %>% 
+  as_tibble
+
+```
+
+The data was accessed via Kaggle. It contains information regarding credit card users' transaction over the span of two days in September, 2013. Most of the predictor information have been transformed with PCA due to confidentiality. Information that remains interpretable includes `Time`, `Amount`, and `Class`.
+
+- `Time`: time elapsed (in seconds) between this transaction and the first transaction 
+- `Amount`: transaction amount
+- `Class`: binary variable with values `fraud` and `genuine`
+
+Let it be noted that the values of the response, `Class`, are highly imbalanced -- with `fraud` accounting for `r sum(cc$Class == 'fraud')` out of `r nrow(cc)`, or  `r round(sum(cc$Class == 'fraud') / nrow(cc), 4) * 100` %, of total transaction.
+
+## Modeling	
+
+In order to predict fraudulent credit card transaction, the following modeling techniques were considered: 
+
+-	Gradient boosting machine 
+- Boosted logistic regression
+- Neural network
+
+Two validation methods were utilized. First, models were validated through 5-fold cross validation. Then, subsampling conducted according to ROSE with 5-fold cross validation to address issue of imbalance in response variable. The True Positive Rate, or Sensitivity, will be the metric of choice for validation
+
+## Evaluation
+
+### 5-fold cross validation
+
+```{r, cv-control-5-fold, echo = TRUE}
+cv = trainControl(
+  classProbs = TRUE,
+  method = "cv",
+  number = 5,
+  summaryFunction = twoClassSummary
+)
+```
+
+```{r}
+set.seed(42)
+glm_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'glm',
+  metric = "Sens",
+  trControl = cv
+)
+
+```
+
+
+```{r, gbm, echo = TRUE}
+set.seed(42)
+gbm_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'gbm',
+  metric = "Sens",
+  trControl = cv,
+  verbose = FALSE
+)
+```
+
+```{r, boosted-logistic-regression, echo = TRUE}
+set.seed(42)
+logit_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'LogitBoost',
+  metric = "Sens",
+  trControl = cv
+)
+```
+
+```{r, neaural-network, echo = TRUE}
+set.seed(42)
+nnet_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'nnet',
+  metric = "Sens",
+  trControl = cv,
+  trace = FALSE
+)
+```
+
+### Subsample for Imbalance
+
+```{r, cv-control-subsampling-for-imbalance, echo = TRUE}
+cv_ss = trainControl(
+  classProbs = TRUE,
+  method = "cv",
+  number = 5,
+  sampling = 'rose',
+  summaryFunction = twoClassSummary
+)
+```
+
+```{r, gbm-subsample-for-imbalance, echo = TRUE}
+set.seed(42)
+gbm_ss_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'gbm',
+  metric = "Sens",
+  trControl = cv_ss,
+  verbose = FALSE
+)
+```
+
+```{r, LogitBoost-imbalance, echo = TRUE}
+set.seed(42)
+logit_ss_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'LogitBoost',
+  metric = "Sens",
+  trControl = cv_ss
+)
+```
+
+```{r, neural-network-imbalance, echo = TRUE}
+set.seed(42)
+nnet_ss_mod = train(
+  Class ~ . - Time,
+  data = cc_trn,
+  method = 'nnet',
+  metric = "Sens",
+  trControl = cv_ss,
+  trace = FALSE
+)
+```
+
+***
+
+# Results
+
+When only using 5-fold cross validation, the bootsted logistic regression heavily out-performed the other two models. Accounting for imbalance in the response, all three models turned out to perform fairly similarly. Nonetheless, the boosted logistic regression model best performed when validating for best True Positive prediction using 5-fold cv according to ROSE. 
+
+```{r, create-tables}
+model = c('Gradient Boosting Machine', 'Boosted Logistic Regression', 'Neural Network')
+
+sens = c(max(gbm_mod$results[['Sens']]), max(logit_mod$results[['Sens']]), max(nnet_mod$results[['Sens']]), max(gbm_ss_mod$results[['Sens']]), max(logit_ss_mod$results[['Sens']]), max(nnet_ss_mod$results[['Sens']])) * 100
+
+specs = c(1 - gbm_mod$results[which.max(gbm_mod$results[['Sens']]), ]$Spec, 1 - logit_mod$results[which.max(logit_mod$results[['Sens']]), ]$Spec, 1 - nnet_mod$results[which.max(nnet_mod$results[['Sens']]), ]$Spec, 1 - gbm_ss_mod$results[which.max(gbm_ss_mod$results[['Sens']]), ]$Spec, 1 - logit_ss_mod$results[which.max(logit_ss_mod$results[['Sens']]), ]$Spec, 1 - nnet_ss_mod$results[which.max(nnet_ss_mod$results[['Sens']]), ]$Spec) * 100
+
+cv_metrics = tibble(
+  "Model" = model,
+  "True Positive Rate" = sens[1:3],
+  "True Negative Rate" = specs[1:3]
+)
+
+rose_metrics = tibble(
+  "Model" = model,
+  "True Positive Rate" = sens[4:6],
+  "True Negative Rate" = specs[4:6]
+)
+
+cv_metrics %>% 
+  kable(caption = '5-Fold Cross Validation, %', digits = 2) %>% 
+  kable_styling("striped", full_width = FALSE)
+
+rose_metrics %>% 
+  kable(caption = '5-Fold CV with Subsampling for Imbalance, %', digits = 2) %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r, calculate-loss}
+calc_loss = function(model, data) {
+  act = data$Class
+  pred = predict(model, data)
+  ifelse(act == 'fraud' & pred == 'genuine', 0.5 * data$Amount, ifelse(
+    act == 'genuine' & pred == "fraud", 1, 0
+  ))
+}
+```
+
+***
+
+# Discussion
+
+Let us assume that the monetary consequence, or "loss", for a credit card company can be defined (refer to the Loss Calculation Table below). 
+
+```{r, test-results}
+cf = confusionMatrix(predict(logit_ss_mod, cc_tst), reference = cc_tst$Class, positive = 'fraud')
+
+loss = calc_loss(gbm_ss_mod, cc_tst)
+tibble(
+  "Metric" = c(
+    "True Positive Rate (%)",
+    "True Negative Rate (%)",
+    "Average Loss (€)",
+    "Maximum Loss (€)",
+    "Total Loss (€)"
+  ),
+  "Value" = c(
+    cf$byClass[1] * 100,
+    (1 - cf$byClass[2]) * 100,
+    mean(loss),
+    max(loss),
+    sum(loss)
+  )
+) %>% 
+  kable(caption = '**Boosted Logistic Regression**, 5-Fold CV with Subsampling for Imbalance', digits = 2) %>% 
+  kable_styling("striped", full_width = FALSE)
+
+```
+
+Using to the selected boosted logistic regression model, 85 % of frauds can be detected. However, there are several limitations that make this model unjustifiable when making predictions on new datasets. First, the data was collected from a very specific time frame -- across two days in September, 2013. This makes the data liable to biased based on seasonal factors. Second, the location of the transactions made were all in Europe. Consequently, this use of this model to predict credit card fraud outside of this timeframe and in countries outside of Europe cannot be justified. 
+
+Fitting a model with data from more various timeframes and transactions from countries outside of Europe will allow the model to be more robust. Another direction for a more meaningful analysis would be to build a model that better predicts fraud that leads to larger "losses". Such model predictions would be more useful for a credit card company, as well as customers (since larger "losses" are associated with larger sums of fraudulent transaction).
+
+
+```{r}
+tibble(
+  "Actual" = c("Fraud", "Fraud", "Genuine", "Genuine"),
+  "Predicted" = c("Genuine", "Fraud", "Genuine", "Fraud"),
+  "Loss" = c("0.5 x (Actual Amount)", 0, 0, 1)
+)  %>% 
+  kable(caption = 'Loss Calculation Table') %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+[^1]: [Wikipedia: Credit Card Fraud](https://en.wikipedia.org/wiki/Credit_card_fraud)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
