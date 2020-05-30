@@ -1,0 +1,369 @@
+---
+title: "Predicting Representation of Women in Films"
+author: "Jae-Ho Lee, Dhruv Khanna, Emily Ciaccio"
+output: pdf_document
+---
+
+```{r, load-packages, include = FALSE, message = FALSE}
+library("tidyverse")
+library("rsample")
+library("caret")
+library("kableExtra")
+
+calc_rmse = function(act, pred) {
+  sqrt(mean((act - pred)^2))
+}
+
+# create genre-identifying functions
+genre_det = function(data, gen) {
+  str_detect(data, gen)
+}
+```
+
+```{r, include = FALSE}
+theme_set(theme_light())
+```
+
+***
+
+# Abstract
+
+> Statistical learning methods were applied to movie data to predict the Bechdel test score based on pre-release movie data. A variety of learning techniques were explored and validated. Final results suggest that more data is needed to truly capture female influence in films. Further analysis that includes more comprehensive data on the movie is recommended.
+
+***
+
+# Introduction
+
+This analysis aims to predict the Bechdel test[^1] score for a movie given a variety of features. The Bechdel test is a famous metric to gauge female representation in media. The requirement for any media to pass the test is for 2 named female characters to share dialogue about something other than a man. Through this analysis we will try to discover how factors like budget, cast and crew gender ratios, year of release, etc. influence a movie's Bechdel score.
+
+The nature of the data used below allows us to apply a variety of statistical learning methods from the course. The response is categorical with a range of 0 - 3, which allows for both multiclass and binary classification tasks. The predictors include a mix of continuous and categorical variables; the structure of certain variables also allowed us to implement feature extraction techniques as seen below.
+
+***
+
+# Methods
+
+## Data Description
+
+The data used for this analysis is collected from two sources:
+
+ - A public API [^2]
+ - Modified Kaggle version of the MovieLens Dataset [^3]
+ 
+The first dataset contains the Bechdel test scores for over 8000 movies ranging from the early 1900s to 2019, thus providing us with a varied sample. The second dataset contains widespread information about movies thus allowing us to try a variety of modeling approaches. The two datasets are merged based on their IMDB IDs.
+
+The specific task at hand here is classifying the multiclass variable `bechdel` and its binary counterpart `bechdel_bin`. Important predictors such as `female_ratio`, `female_director` as well as the various genre dummy variables are calculated from the `cast_crew` data set. Other predictors include budget and year of release.
+ 
+We specifically focus on pre-release information to improve the overall applicability of this model. Some exploratory data analysis can be found in the appendix.
+
+```{r, load-data, warning = FALSE, include = FALSE}
+#commented code was used to initially call data from API
+
+#bechdel <- fromJSON("http://bechdeltest.com/api/v1/getAllMovies")
+#write.csv(bechdel, "bechdel.csv")
+
+#reading datasets
+bechdel = read.csv('bechdel.csv')
+metadata = read_csv('movies_metadata.csv')
+ratio = read.csv('crew_cast_ratio.csv')
+```
+
+```{r, clean-data, include = FALSE}
+#bechdel
+colnames(bechdel)[colnames(bechdel) == "rating"] = "bechdel"
+colnames(bechdel)[colnames(bechdel) == "imdbid"] = "imdb_id"
+bechdel$X = bechdel$title = bechdel$id = NULL
+
+#ratio
+ratio$X = NULL
+
+#metadata
+metadata$imdb_id = as.numeric(str_remove(metadata$imdb_id, "tt"))
+```
+
+```{r, merge-data, include = FALSE}
+#merging all datasets
+df = merge(bechdel, metadata, by = "imdb_id")
+df = merge(df, ratio, by = "id")
+
+#cleaning final dataset
+df = subset(df, select = -c(homepage, original_title, overview, poster_path, tagline, adult, popularity, revenue, vote_average, vote_count, production_companies, production_countries, release_date, spoken_languages, original_language, status, video, belongs_to_collection, id, imdb_id, title))
+
+#filtering for budgets over $10000
+df = subset(df, df$budget >= 10000)
+
+#creating factor variables
+df$bechdel_bin = factor(ifelse(df$bechdel == 3, 1, 0))
+df$female_director = factor(ifelse(df$female_director == 1, "female director", "male director"))
+df = tibble::as_tibble(df) %>% 
+  mutate(
+      action = genre_det(df$genres, "Action"),
+      adventure = genre_det(df$genres, "Adventure"),
+      animation = genre_det(df$genres, "Animation"),
+      comedy = genre_det(df$genres, "Comedy"),
+      crime = genre_det(df$genres, "Crime"),
+      documentary = genre_det(df$genres, "Documentary"),
+      drama = genre_det(df$genres, "Drama"),
+      family = genre_det(df$genres, "Family"),
+      fantasy = genre_det(df$genres, "Fantasy"),
+      history = genre_det(df$genres, "History"),
+      horror = genre_det(df$genres, "Horror"),
+      music = genre_det(df$genres, "Music"),
+      mystery = genre_det(df$genres, "Mystery"),
+      romance = genre_det(df$genres, "Romance"),
+      science_fiction = genre_det(df$genres, "Science Fiction"),
+      tv_movie = genre_det(df$genres, "TV Movie"),
+      thriller = genre_det(df$genres, "Thriller"),
+      war = genre_det(df$genres, "War"),
+      western = genre_det(df$genres, "Western")
+  ) %>% 
+  select(- genres)
+```
+
+```{r, split-data, include = FALSE}
+set.seed(42)
+
+df_split = initial_split(df, prop = 0.8)
+df_trn = training(df_split)
+df_tst = testing(df_split)
+```
+
+***
+
+## Modeling
+
+In order to predict the Bechdel test score, a variety of binary and multiclassification techniques were used in addition to regression methods. Multiclassification tasks tried to predict a score between 0 - 3 whereas binary classification tasks simply predicted 0 (fail) or 1 (pass). 
+
+The modeling strategies considered were:
+
+- KNN Classification (multi / binary)
+- KNN Regression 
+- Stochastic Gradient Boosted (multi / binary classification) 
+- Multinomial Regression (multiclass)
+- Logistic Regression (binary class)
+
+### Evaluation
+
+The KNN regression model was selected based on RMSE from k = 1:100. All other models were tuned used 5-fold cross-validation through the `train` package. Multiclass models were tuned to maximize the default Accuracy, whereas binary models were tuned to maximize Area under the ROC curve.
+
+Models were ultimately evaluated based on their ability to simply predict whether a movie passes or fails the Bechdel test (binary classification). The binary classification tasks was naturally more consistent due to the drop in factor levels, but the binary outcome improved class balance which ultimately helped fit better models. Confusion Matrices were used to evaluate performance on the training dataset in order to choose a final model.
+
+### Multiclass
+
+```{r, knn-reg, echo = TRUE}
+k = 1:100
+
+knn_mods = map(k, ~ knnreg(bechdel ~ . - bechdel_bin, data = df_trn, k = .x))
+knn_preds = map(knn_mods, ~ predict(.x, newdata = df_trn, type = "response"))
+knn_rmse = map(knn_preds, ~ calc_rmse(act = df_trn$bechdel, pred = .x))
+
+fit_knnreg = knnreg(bechdel ~ . - bechdel_bin, data = df_trn, k = which.min(knn_rmse))
+```
+
+```{r, knn-mult, echo = TRUE}
+set.seed(42)
+fit_knn_mult = train(factor(bechdel) ~ . - bechdel_bin - runtime, data = df_trn,
+                method = "knn",
+                trControl = trainControl(method = "cv", number = 5))
+```
+
+```{r, gbm-mult, echo = TRUE}
+set.seed(42)
+fit_gbm_mult = train(factor(bechdel_bin) ~ . - bechdel - runtime, data = df_trn,
+                     method = "gbm",
+                     trControl = trainControl(method = "cv", number = 5),
+                     verbose = FALSE)
+```
+
+```{r, multinom-mult, echo = TRUE}
+set.seed(42)
+fit_multinom_mult = train(factor(bechdel) ~ . - bechdel_bin - runtime, data = df_trn,
+                          method = "multinom",
+                          trControl = trainControl(method = "cv", number = 5), 
+                          trace = FALSE)
+```
+
+### Binary
+
+```{r, knn-bin, echo = TRUE}
+set.seed(42)
+#response mutated using make.names() to allow custom metric
+fit_knn_bin = train(make.names(factor(bechdel_bin)) ~ . - bechdel - runtime, data = df_trn,
+                method = "knn",
+                trControl = trainControl(method = "cv", 
+                                         number = 5, 
+                                         classProbs = TRUE,
+                                         summaryFunction = twoClassSummary), 
+                metric = "ROC")
+```
+
+```{r, gbm-bin, echo = TRUE}
+set.seed(42)
+fit_gbm_bin = train(make.names(factor(bechdel_bin)) ~ . - bechdel - runtime, data = df_trn,
+                   method = "gbm",
+                   trControl = trainControl(method = "cv", 
+                                            number = 5,
+                                            classProbs = TRUE,
+                                            summaryFunction = twoClassSummary), 
+                   verbose = FALSE, metric = "ROC")
+```
+
+```{r, multinom-bin, echo = TRUE}
+set.seed(42)
+fit_logistic_bin = train(make.names(factor(bechdel_bin)) ~ . - bechdel - runtime, data = df_trn,
+                          method = "glm",
+                          trControl = trainControl(method = "cv", 
+                                                   number = 5,
+                                                   classProbs = TRUE,
+                                                   summaryFunction = twoClassSummary), 
+                          trace = FALSE, metric = "ROC")
+```
+
+***
+
+# Results
+
+Ultimately, binary classification was the best option, both performance-wise and due to other reasons as stated above. The results show a similar performance across all models. KNN model is chosen as the final model due to slightly better performance across Accuracy, Sensitivity and Specificity.
+
+```{r, result-tab, echo = FALSE}
+bin_mod_names = c("K-Nearest Neighbors", "Stochastic Boosted Gradient", "Logistic")
+bin_accs = c(0.6469, 0.6479, 0.6462)
+bin_sens = c(0.5389, 0.5054, 0.5425)
+bin_spec = c(0.7385, 0.5425, 0.7343)
+
+bin_res = tibble(
+  "Models" = bin_mod_names,
+  "Accuracy" = bin_accs,
+  "Sensitivity" = bin_sens, 
+  "Specificity" = bin_spec) 
+
+bin_res %>% 
+  kable(digits = 3) %>% 
+  kable_styling(c("striped", "hover"), full_width = FALSE)
+```
+
+***
+
+# Discussion
+
+In order to truly evaluate the performance of this model, its predictive power is tested on a held-out testing dataset, the results of which can be seen below. 
+
+```{r, test-cm, echo = FALSE}
+confusionMatrix(data = factor(ifelse(predict(fit_knn_bin, newdata = df_tst) == "X0", 0, 1)),
+                reference = df_tst$bechdel_bin)
+```
+
+We can see that the model fails to perform significantly on the held-out test data. The accuracy of `0.5381` is only slightly higher than the No Information Rate (accuracy if you blidnly guess the same thing for all observations) of `0.5354`. 
+
+There are a variety of reasons that could possibly explain these results. Based on the initial EDA, we can see that predictors like `female_ratio` and `female_director` don't drastically change the score distributions. Subsetting the dataset into male and female directors shows that the model performs rather similarly for subsets, which further lends to the theory that these variables don't really contribute to the bechdel score on their own:
+
+**Female director subset:**
+
+```{r, subset1, echo = FALSE}
+df1 = df_tst[df_tst$female_director == "female director", ]
+df2 = df_tst[df_tst$female_director == "male director", ]
+cm1 = confusionMatrix(data = factor(ifelse(predict(fit_knn_bin, newdata = df1) == "X0", 0, 1)),
+                reference = df1$bechdel_bin)
+cm2 = confusionMatrix(data = factor(ifelse(predict(fit_knn_bin, newdata = df2) == "X0", 0, 1)),
+                reference = df2$bechdel_bin)
+
+cm1$table %>%
+  kable(digits = 3, caption = "Female Directors") %>% 
+  kable_styling(c("striped", "hover"), full_width = FALSE)
+```
+
+**Male director subset:**
+
+```{r, subset2, echo = FALSE}
+cm2$table %>%
+  kable(digits = 3, caption = "Male Directors") %>% 
+  kable_styling(c("striped", "hover"), full_width = FALSE)
+```
+
+Perhaps the variables gathered here are simply not enough to detect a strong female influence in the creation of films. Model accuracy may improve with the involvement of more specific features such as:
+
+- Ratio of male to female lead / supporting actors
+- Female influence in the writer's room
+
+It may also be naive to restrict analysis to pre-release movie data based on the production of the movie; perhaps an analysis that explores Natural Language Processing (NLP) to detect what types of dialogue characterize movies that pass the Bechdel test. 
+
+# Appendix
+
+## Data Dictionary
+
+```{r, include = FALSE}
+list(names(df_trn))
+```
+
+- `id` - MovieLens id that is used as a key between metadata dataset and cast-crew dataset
+- `imdb_id` - IMDB id that is used as a key between metadata dataset and bechdel-score dataset
+- `bechdel` - bechdel test score (0 - 3)
+- `year` - year of movie release
+- `belongs_to_collection` - dictionary item that holds collection name if true; N/A otherwise
+- `budget` - movie budget ($)
+- `genres` - dictionary holding genres for each movie
+- `runtime` - total movie runtim (min)
+- `title` - original movie title
+- `female_director` - factor variable that is 1 when movie is directed by a female; 0 otherwise
+- `female_ratio` - ratio of females to males in cast and crew for movie
+- `bechdel_bin` - factor variable that is 1 when a movie passes the Bechdel test; 0 otherwise
+- `action, adventure, animation, etc` - dummy variables for respective genres
+
+Additional documentation can be accessed from the links provided in the Data Description.
+
+## EDA
+
+```{r, create-eda-plots, echo = FALSE, message = FALSE}
+p1 = df_trn %>% 
+  ggplot(aes(group = bechdel, y = female_ratio, fill = bechdel)) +
+  geom_boxplot()
+
+
+p2 = df_trn %>%
+  ggplot(aes(x = bechdel, fill = bechdel)) + 
+  geom_bar() + 
+  facet_wrap(~female_director)
+
+p3 = df_trn %>%
+  ggplot(aes(group = bechdel, y = runtime, fill = bechdel)) +
+  geom_boxplot()
+
+p4 = df_trn %>%
+  ggplot(aes(x = year)) + 
+  geom_histogram(color="black", fill="lightgreen")
+
+p5 = df_trn %>%
+  ggplot(aes(group = bechdel, y = budget, fill = bechdel)) +
+  geom_boxplot()
+
+p6 = df_trn %>%
+  ggplot(aes(x = bechdel_bin)) + 
+  geom_bar(color="black", fill="darkred", stat = "count")
+```
+
+```{r, print-eda-plots, fig.height = 16, fig.width = 16, echo = FALSE, warning = FALSE, message = FALSE}
+gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 3)
+```
+
+## Additional Results
+
+```{r}
+fit_gbm_bin$results %>% 
+  kable(digits = 3, caption = "Table: Stochastic Gradient Boosted Binary Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r}
+fit_knn_bin$results %>% 
+  kable(digits = 4, caption = "Table: Multinomial Multiclass Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r}
+fit_logistic_bin$results %>% 
+  kable(digits = 3, caption = "Table: Random Forest Binary Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+[^1]: [Wikipedia: Bechdel Test](https://en.wikipedia.org/wiki/Bechdel_test)
+[^2]: [BechdelTest: Bechdel Test](https://bechdeltest.com/api/v1/doc)
+[^3]: [Kaggle: MovieLens Fataset](https://www.kaggle.com/rounakbanik/the-movies-dataset)
