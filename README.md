@@ -1,6 +1,6 @@
 # Representation of Women in Film: Project Overview
 
-- Created a statistical report that recommends a tool for predicting the bechdel test score of movies based on pre-production
+- Created a report that explores statistical models for predicting the bechdel test score of movies based on pre-production data
 - Collected data from three separate data sources (bechdel test score, movie meta data, movie genre data) 
 - Feature engineered predictor variables (female director, female writer, female ratio of crew, genre)
 - Optimized regression and classification models (K-nearest-neighbors, stochastic gradient boosted, multinomial/logistic regression)
